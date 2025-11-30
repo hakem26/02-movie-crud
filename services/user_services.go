@@ -1,76 +1,73 @@
 package services
 
 import (
-    "errors"
-    "example/moviecrud/models"
-    "golang.org/x/crypto/bcrypt"
-    "math/rand"
-    "strconv"
+	"errors"
+	"example/moviecrud/models"
+	"example/moviecrud/repository"
+	"example/moviecrud/utils"
 )
 
-func HashPassword(password string) (string, error) {
-    bytes, err := bcrypt.GenerateFromPassword([]byte(password), 14)
-    if err != nil {
-        return "", err
-    }
-    return string(bytes), nil
+type UserService struct {
+	repo repository.UserRepository
 }
 
-func CreateUser(user models.User) (models.User, error) {
-    hashed, err := HashPassword(user.Password)
-    if err != nil {
-        return user, err
-    }
-
-    user.ID = strconv.Itoa(rand.Intn(1000000))
-    user.Password = hashed
-
-    models.Users = append(models.Users, user)
-    return user, nil
+func NewUserService(r repository.UserRepository) *UserService {
+	return &UserService{repo: r}
 }
 
-func GetAllUsers() []models.User {
-    return models.Users
+func (s *UserService) CreateUser(u *models.User) (*models.User, error) {
+	// basic validation
+	if u.Email == "" || u.Password == "" {
+		return nil, errors.New("email and password required")
+	}
+
+	// check existing email
+	if existing, _ := s.repo.FindByEmail(u.Email); existing != nil {
+		return nil, errors.New("email already used")
+	}
+
+	hashed, err := utils.HashPassword(u.Password)
+	if err != nil {
+		return nil, err
+	}
+	u.Password = hashed
+
+	if err := s.repo.Create(u); err != nil {
+		return nil, err
+	}
+	return u, nil
 }
 
-func GetUserByID(id string) (models.User, error) {
-    for _, u := range models.Users {
-        if u.ID == id {
-            return u, nil
-        }
-    }
-    return models.User{}, errors.New("user not found")
+func (s *UserService) GetAll() ([]*models.User, error) {
+	return s.repo.FindAll()
 }
 
-func UpdateUser(id string, newData models.User) (models.User, error) {
-    for i, u := range models.Users {
-        if u.ID == id {
-
-            // اگر پسورد جدید داده شده بود، هش کن
-            if newData.Password != "" {
-                hashed, err := HashPassword(newData.Password)
-                if err != nil {
-                    return newData, err
-                }
-                newData.Password = hashed
-            } else {
-                newData.Password = u.Password
-            }
-
-            newData.ID = id
-            models.Users[i] = newData
-            return newData, nil
-        }
-    }
-    return models.User{}, errors.New("user not found")
+func (s *UserService) GetByID(id string) (*models.User, error) {
+	return s.repo.FindByID(id)
 }
 
-func DeleteUser(id string) error {
-    for i, u := range models.Users {
-        if u.ID == id {
-            models.Users = append(models.Users[:i], models.Users[i+1:]...)
-            return nil
-        }
-    }
-    return errors.New("user not found")
+func (s *UserService) Update(id string, u *models.User) (*models.User, error) {
+	// اگر پسورد داده شده، هش کن
+	if u.Password != "" && len(u.Password) < 60 { //  // 60 ≈ طول bcrypt hash
+		hashed, err := utils.HashPassword(u.Password)
+		if err != nil {
+			return nil, err
+		}
+		u.Password = hashed
+	}
+
+	updatedUser, err := s.repo.Update(id, u)
+	if err != nil {
+		return nil, err
+	}
+
+	return updatedUser, nil
+}
+
+func (s *UserService) Delete(id string) error {
+	return s.repo.Delete(id)
+}
+
+func (s *UserService) GetByUserID(userID string) (*models.User, error) {
+	return s.repo.FindByUserID(userID) // باید توی repo هم اضافه کنی (یه خط)
 }

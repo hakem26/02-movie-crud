@@ -2,77 +2,155 @@ package controllers
 
 import (
 	"encoding/json"
+	"net/http"
+
+	"example/moviecrud/middleware"
 	"example/moviecrud/models"
 	"example/moviecrud/services"
-	"net/http"
+	"example/moviecrud/utils"
 
 	"github.com/gorilla/mux"
 )
 
-func GetUsers(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-type", "application/json")
-	json.NewEncoder(w).Encode(services.GetAllUsers())
+type UserController struct {
+	Service *services.UserService
 }
 
-func GetUser(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-type", "application/json")
+func NewUserController(s *services.UserService) *UserController {
+	return &UserController{Service: s}
+}
 
-	vars := mux.Vars(r)
-	id := vars["id"]
+// تبدیل models.User به PublicUser (بدون پسورد و با id درست)
+func toPublicUser(u *models.User) models.PublicUser {
+	return models.PublicUser{
+		ID:       u.UserID, // این مهمه! از UserID استفاده می‌کنه نه ID
+		FullName: u.FullName,
+		Email:    u.Email,
+		Level:    u.Level,
+	}
+}
 
-	user, err := services.GetUserByID(id)
+func toPublicUsers(users []*models.User) []models.PublicUser {
+	result := make([]models.PublicUser, len(users))
+	for i, u := range users {
+		result[i] = toPublicUser(u)
+	}
+	return result
+}
+
+func (c *UserController) GetUsers(w http.ResponseWriter, r *http.Request) {
+	users, err := c.Service.GetAll()
 	if err != nil {
-		w.WriteHeader(http.StatusNotFound)
+		utils.JSONError(w, "failed to fetch users", http.StatusInternalServerError)
 		return
 	}
 
-	json.NewEncoder(w).Encode(user)
+	publicUsers := toPublicUsers(users)
+	utils.JSONResponse(w, publicUsers, http.StatusOK)
 }
 
-func CreateUser(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-type", "application/json")
+func (c *UserController) GetUser(w http.ResponseWriter, r *http.Request) {
+	id := mux.Vars(r)["id"]
 
-	var user models.User
-	json.NewDecoder(r.Body).Decode(&user)
-
-	created, err := services.CreateUser(user)
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
+	user, err := c.Service.GetByID(id)
+	if err != nil || user == nil {
+		utils.JSONError(w, "user not found", http.StatusNotFound)
 		return
 	}
 
-	json.NewEncoder(w).Encode(created)
+	publicUser := toPublicUser(user)
+	utils.JSONResponse(w, publicUser, http.StatusOK)
 }
 
-func UpdateUser(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-type", "application/json")
+func (c *UserController) CreateUser(w http.ResponseWriter, r *http.Request) {
+	// این رو بعداً غیرفعال می‌کنیم چون فقط از /auth/register باید ثبت نام کنه
+	utils.JSONError(w, "use /auth/register endpoint", http.StatusForbidden)
+}
 
-	vars := mux.Vars(r)
-	id := vars["id"]
+func (c *UserController) UpdateUser(w http.ResponseWriter, r *http.Request) {
+	id := mux.Vars(r)["id"]
 
-	var data models.User
-	json.NewDecoder(r.Body).Decode(&data)
+	var input struct {
+		FullName string           `json:"fullname" validate:"omitempty,min=3"`
+		Level    models.UserLevel `json:"level" validate:"omitempty,dive"`
+	}
 
-	updated, err := services.UpdateUser(id, data)
-	if err != nil {
-		w.WriteHeader(http.StatusNotFound)
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		utils.JSONError(w, "invalid body", http.StatusBadRequest)
 		return
 	}
 
-	json.NewEncoder(w).Encode(updated)
-}
-
-func DeleteUser(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-type", "application/json")
-
-	vars := mux.Vars(r)
-	id := vars["id"]
-
-	err := services.DeleteUser(id)
-	if err != nil {
-		w.WriteHeader(http.StatusNotFound)
+	// اینجا باید از سرویس آپدیت استفاده کنی (بعداً پیاده می‌کنیم)
+	user, err := c.Service.GetByID(id)
+	if err != nil || user == nil {
+		utils.JSONError(w, "not found", http.StatusNotFound)
 		return
 	}
 
+	if input.FullName != "" {
+		user.FullName = input.FullName
+	}
+	if input.Level.LevelID != "" {
+		user.Level = input.Level
+	}
+
+	updatedUser, err := c.Service.Update(id, user)
+	if err != nil {
+		utils.JSONError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	utils.JSONResponse(w, toPublicUser(updatedUser), http.StatusOK)
+}
+
+func (c *UserController) DeleteUser(w http.ResponseWriter, r *http.Request) {
+	id := mux.Vars(r)["id"]
+	if err := c.Service.Delete(id); err != nil {
+		utils.JSONError(w, "not found or error", http.StatusNotFound)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (c *UserController) GetMe(w http.ResponseWriter, r *http.Request) {
+	claims := middleware.GetCurrentUser(r)
+	if claims == nil {
+		utils.JSONError(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	user, err := c.Service.GetByUserID(claims.UserID)
+	if err != nil || user == nil {
+		utils.JSONError(w, "user not found", http.StatusNotFound)
+		return
+	}
+
+	utils.JSONResponse(w, toPublicUser(user), http.StatusOK)
+}
+
+func (c *UserController) UpdateMe(w http.ResponseWriter, r *http.Request) {
+	claims := middleware.GetCurrentUser(r)
+	if claims == nil {
+		utils.JSONError(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var input struct {
+		FullName string `json:"fullname" validate:"omitempty,min=3"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		utils.JSONError(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+
+	user, _ := c.Service.GetByUserID(claims.UserID)
+	if user.FullName = input.FullName; input.FullName != "" {
+		updated, err := c.Service.Update(claims.UserID, user)
+		if err != nil {
+			utils.JSONError(w, "update failed", http.StatusBadRequest)
+			return
+		}
+
+		utils.JSONResponse(w, toPublicUser(updated), http.StatusOK)
+	}
 }
